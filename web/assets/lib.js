@@ -1,0 +1,10 @@
+const C=window.CLINICQ,$=s=>document.querySelector(s);
+const NEED=!C||/YOUR-/.test(C.SUPABASE_URL+C.SUPABASE_ANON_KEY);
+const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const iso=n=>{const d=new Date();d.setDate(d.getDate()+n);return d.toLocaleDateString('en-CA')};
+const mins=t=>{const p=t.split(':');return +p[0]*60+ +p[1]};
+const fmt=m=>{const h=Math.floor(m/60)%24;return (h%12||12)+':'+String(m%60).padStart(2,'0')+' '+(h>=12?'PM':'AM')};
+const hm=t=>fmt(mins(t));
+const dl=d=>new Date(d+'T00:00:00').toLocaleDateString('en-IN',{weekday:'short',day:'numeric',month:'short'});
+const nowMin=()=>{const n=new Date();return n.getHours()*60+n.getMinutes()};
+const setup=()=>{$('#app').innerHTML='<div class="wrap"><div class="card"><h2>Setup needed</h2><p>Fill in web/config.js with your Supabase URL, publishable key and clinic id.</p></div></div>'};

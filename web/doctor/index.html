@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"><title>ClinicQ Doctor: queue dashboard</title><link rel="stylesheet" href="../assets/style.css"></head>
+<body><div id="app"></div>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.js"></script>
+<script src="../config.js"></script><script src="../assets/lib.js"></script>
+<script>
+const sb=NEED?null:supabase.createClient(C.SUPABASE_URL,C.SUPABASE_ANON_KEY);
+let me=null,cl=null,sessions=[],cur=null,bk=[],tpl=[],md={i:-1,sel:[],q:''},wid=null,ch=null,msg='';
+const email=u=>u.trim().toLowerCase()+'@staff.clinicq.local';
+
+async function login(e){
+  e.preventDefault();const f=e.target,{error}=await sb.auth.signInWithPassword({email:email(f.u.value),password:f.p.value});
+  if(error){$('#lerr').textContent='Wrong username or password.';return}
+  msg='';await boot();
+}
+async function logout(){await sb.auth.signOut();me=null;cur=null;bk=[];if(ch){sb.removeChannel(ch);ch=null;wid=null}render()}
+async function boot(){
+  const{data:u}=await sb.auth.getUser();
+  if(!u.user){render();return}
+  const{data:s}=await sb.from('staff').select('*,clinics(*)').eq('id',u.user.id).maybeSingle();
+  if(!s){await sb.auth.signOut();msg='This login is not linked to a clinic. Ask the admin to add you.';render();return}
+  me=s;cl=s.clinics;await loadTpl();await loadSessions();render();
+}
+async function loadSessions(){
+  const{data}=await sb.from('sessions').select('*').eq('doctor_id',me.id).gte('session_date',iso(0)).order('session_date').order('start_time');
+  sessions=data||[];cur=sessions.find(s=>cur&&s.id===cur.id)||sessions[0]||null;await loadBk();
+}
+async function loadBk(){
+  if(!cur){bk=[];return}
+  const{data}=await sb.from('bookings').select('*').eq('session_id',cur.id).order('queue_order').order('token_no');bk=data||[];
+  if(wid!==cur.id){
+    wid=cur.id;if(ch)sb.removeChannel(ch);
+    ch=sb.channel('q-'+cur.id).on('postgres_changes',{event:'*',schema:'public',table:'bookings',filter:'session_id=eq.'+cur.id},async()=>{
+      if(/INPUT|SELECT/.test(document.activeElement.tagName))return;await loadBk();render()}).subscribe();
+  }
+}
+async function loadTpl(){const{data}=await sb.from('medicine_lists').select('*').eq('doctor_id',me.id).order('condition');tpl=data||[]}
+async function pickS(id){cur=sessions.find(s=>s.id===id);await loadBk();render()}
+
+/* WhatsApp alerts are sent by the notify Edge Function */
+async function notify(kind){try{await sb.functions.invoke('notify',{body:{session_id:cur.id,kind}})}catch(e){}}
+async function run(p){msg='';const{error}=await p;if(error)msg=error.message;await loadBk();render()}
+async function nextP(){await run(sb.rpc('call_next',{p_session_id:cur.id}));notify('queue')}
+async function skip(){const c=bk.find(b=>b.status==='serving');if(c){await run(sb.rpc('skip_booking',{p_booking_id:c.id}));notify('queue')}}
+async function addWalk(e){e.preventDefault();const f=e.target;await run(sb.rpc('add_walkin',{p_session_id:cur.id,p_name:f.n.value,p_phone:f.ph.value.replace(/\D/g,'').slice(-10)}));notify('queue')}
+async function newSess(e){
+  e.preventDefault();const f=e.target,m=+f.m.value,o=Math.min(+f.o.value,m);
+  const{data,error}=await sb.from('sessions').insert({clinic_id:me.clinic_id,doctor_id:me.id,session_date:f.d.value,start_time:f.s.value,end_time:f.e.value,max_tokens:m,online_quota:o}).select().single();
+  msg=error?error.message:'';if(data)cur=data;await loadSessions();render();
+}
+async function saveSet(){
+  const s=$('#ts').value,e=$('#te').value,m=Math.min(60,Math.max(1,+$('#tm').value||8)),w=$('#tw').value.replace(/\D/g,'').slice(-10);
+  if(e<=s){msg='End time must be after start time.';render();return}
+  const changed=s!==cur.start_time.slice(0,5)||e!==cur.end_time.slice(0,5);
+  let r=await sb.from('sessions').update({start_time:s,end_time:e,minutes_per_patient:m}).eq('id',cur.id);
+  if(!r.error)r=await sb.from('clinics').update({whatsapp_number:w||null}).eq('id',cl.id);
+  msg=r.error?r.error.message:'';if(!r.error)cl.whatsapp_number=w||null;
+  await loadSessions();render();if(changed&&!msg)notify('timing');
+}
+
+/* medicine lists: the doctor's own saved lists, stored in the database */
+function medRes(){
+  const ks=tpl.map((t,i)=>[t,i]).filter(x=>x[0].condition.toLowerCase().includes(md.q.toLowerCase())),t=tpl[md.i];
+  let h=ks.map(x=>'<button class="btn '+(x[1]===md.i?'':'alt')+'" onclick="pick('+x[1]+')">'+esc(x[0].condition)+'</button>').join('')||'<span class="mut">No match. Add it below.</span>';
+  if(t){
+    h+='<div style="margin-top:10px">'+t.medicines.map((m,i)=>'<label class="chk"><input type="checkbox" '+(md.sel.includes(i)?'checked':'')+' onchange="tog('+i+')">'+esc(m)+'</label>').join('')+
+      '<div style="display:flex;gap:8px;margin-top:8px"><input id="nm" placeholder="Add a medicine to this list"><button class="btn alt" style="margin:0" onclick="addMed()">Add</button></div>'+
+      (md.sel.length?'<div class="bub" style="max-width:100%">Prescription draft: '+esc(t.condition)+'\n'+md.sel.map(i=>'• '+esc(t.medicines[i])).join('\n')+'\nDose and duration: add before giving to the patient</div>':'')+'</div>';
+  }
+  return h+'<div style="display:flex;gap:8px;margin-top:12px"><input id="nc" placeholder="New condition, e.g. Fever"><button class="btn alt" style="margin:0" onclick="addCond()">Add condition</button></div>';
+}
+const refMed=()=>{$('#mres').innerHTML=medRes()};
+function pick(i){md.i=i;md.sel=[];refMed()}
+function tog(i){md.sel=md.sel.includes(i)?md.sel.filter(x=>x!==i):md.sel.concat(i);refMed()}
+async function addMed(){const v=$('#nm').value.trim().slice(0,60),t=tpl[md.i];if(!v||!t)return;const{error}=await sb.from('medicine_lists').update({medicines:t.medicines.concat(v)}).eq('id',t.id);if(error){msg=error.message;render();return}await loadTpl();refMed()}
+async function addCond(){const v=$('#nc').value.trim().slice(0,80);if(!v)return;const{error}=await sb.from('medicine_lists').insert({clinic_id:me.clinic_id,doctor_id:me.id,condition:v,medicines:[]});if(error){msg=error.message;render();return}await loadTpl();md.i=tpl.findIndex(x=>x.condition===v);md.sel=[];refMed()}
+
+/* views */
+const sessForm=()=>'<form onsubmit="newSess(event)"><label for="d">Date</label><input id="d" name="d" type="date" value="'+iso(0)+'"><label for="s">Starts</label><input id="s" name="s" type="time" value="17:00"><label for="e">Ends</label><input id="e" name="e" type="time" value="20:00"><label for="m">Maximum tokens</label><input id="m" name="m" type="number" min="1" max="200" value="40"><label for="o">Tokens open for online booking</label><input id="o" name="o" type="number" min="0" max="200" value="28"><button class="btn">Create session</button></form>';
+function dash(){
+  const c=s=>bk.filter(b=>b.status===s).length,sv=bk.find(b=>b.status==='serving');
+  const tiles=[['Waiting',c('waiting')],['Completed',c('done')],['Cancelled',c('cancelled')],['Skipped',c('skipped')]].map(x=>'<div class="tile"><div class="mid">'+x[1]+'</div><div class="mut">'+x[0]+'</div></div>').join('');
+  const so=sessions.map(s=>'<option value="'+s.id+'"'+(s.id===cur.id?' selected':'')+'>'+dl(s.session_date)+', '+hm(s.start_time)+' to '+hm(s.end_time)+'</option>').join('');
+  const list=bk.map(b=>'<div class="row"><span><b>'+b.token_no+'</b> '+esc(b.patient_name)+' <span class="mut">'+esc(b.phone)+(b.source==='walkin'?', walk-in':'')+'</span></span><span class="chip'+(b.status==='serving'?' hot':'')+'">'+b.status+'</span></div>').join('')||'<div class="mut">No bookings yet.</div>';
+  return '<label for="ss">Session</label><select id="ss" onchange="pickS(this.value)">'+so+'</select><div class="tiles">'+tiles+'</div>'+
+    '<div class="card"><div class="mut">Now serving</div><div class="big">'+(sv?sv.token_no:'none')+'</div><div>'+(sv?esc(sv.patient_name):'Press Next patient to start')+'</div><button class="btn" onclick="nextP()">Next patient</button><button class="btn alt" onclick="skip()">Skip current</button></div>'+
+    '<div class="grid"><div class="card"><h3>Queue</h3>'+list+'<form onsubmit="addWalk(event)" style="margin-top:10px"><label for="n">Add a walk-in patient</label><input id="n" name="n" placeholder="Name"><input name="ph" inputmode="numeric" placeholder="Mobile number" style="margin-top:6px"><button class="btn alt">Add walk-in</button></form></div>'+
+    '<div class="card"><h3>Timing and WhatsApp</h3><label for="ts">Session starts</label><input id="ts" type="time" value="'+cur.start_time.slice(0,5)+'"><label for="te">Session ends</label><input id="te" type="time" value="'+cur.end_time.slice(0,5)+'"><label for="tm">Minutes per patient</label><input id="tm" type="number" min="1" max="60" value="'+(cur.minutes_per_patient||cl.default_minutes_per_patient)+'"><label for="tw">Clinic WhatsApp number</label><input id="tw" inputmode="numeric" value="'+esc(cl.whatsapp_number||'')+'"><button class="btn" onclick="saveSet()">Save changes</button></div></div>'+
+    '<div class="card"><h3>Medicine lists</h3><div class="mut">Your own saved lists. You choose every medicine and add the dose.</div><label for="mq">Search a condition</label><input id="mq" value="'+esc(md.q)+'" oninput="md.q=this.value;refMed()"><div id="mres" style="margin-top:8px">'+medRes()+'</div></div>'+
+    '<details class="card"><summary>Create another session</summary>'+sessForm()+'</details>';
+}
+function render(){
+  if(NEED)return setup();
+  const h=!me?'<div class="card" style="max-width:380px"><h2>Doctor login</h2><form onsubmit="login(event)"><label for="u">Username</label><input id="u" name="u" autocomplete="username"><label for="p">Password</label><input id="p" name="p" type="password" autocomplete="current-password"><div class="err" id="lerr" role="alert"></div><button class="btn">Log in</button></form></div>':
+    !cur?'<div class="card"><h2>Create your first session</h2>'+sessForm()+'</div>':dash();
+  $('#app').innerHTML='<div class="wrap"><div class="top"><div><b style="font-size:22px">🩺 ClinicQ Doctor</b>'+(me?'<div class="mut">'+esc(me.full_name)+', '+esc(cl.name)+'</div>':'')+'</div>'+(me?'<button class="btn alt" style="margin:0" onclick="logout()">Log out</button>':'')+'</div>'+(msg?'<div class="err" role="alert">'+esc(msg)+'</div>':'')+h+'</div>';
+}
+if(NEED)setup();else sb.auth.getSession().then(r=>r.data.session?boot():render());
+</script></body></html>

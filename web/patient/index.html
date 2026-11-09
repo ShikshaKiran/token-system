@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"><title>ClinicQ: book a token</title><link rel="stylesheet" href="../assets/style.css"></head>
+<body><div id="app"></div>
+<script src="../config.js"></script><script src="../assets/lib.js"></script>
+<script>
+const API=NEED?'':C.SUPABASE_URL+'/functions/v1/',H={'Content-Type':'application/json',apikey:NEED?'':C.SUPABASE_ANON_KEY};
+const call=async(fn,b)=>{const r=await fetch(API+fn,{method:'POST',headers:H,body:JSON.stringify(b)}),j=await r.json().catch(()=>({}));if(!r.ok)throw new Error(j.message||'Something went wrong. Please try again.');return j};
+const ls={get:k=>{try{return localStorage.getItem(k)}catch(e){return null}},set:(k,v)=>{try{v?localStorage.setItem(k,v):localStorage.removeItem(k)}catch(e){}}};
+let sess=[],code=ls.get('clinicq-code'),wl=ls.get('clinicq-wl'),st=null,clinic='Clinic',err='';
+
+async function loadSessions(){try{const j=await call('patient-api',{action:'sessions',clinic_id:C.CLINIC_ID});sess=j.sessions;clinic=j.clinic_name||clinic}catch(e){err=e.message}}
+async function refresh(){
+  if(!code)return render();
+  try{const j=await call('patient-api',{action:'status',code});st=j.status;clinic=j.clinic_name||clinic;if(!st){ls.set('clinicq-code','');code=null}}catch(e){}
+  render();
+}
+async function book(e){
+  e.preventDefault();const f=e.target,x=$('#err');x.textContent='';
+  try{
+    const j=await call('book',{session_id:f.sid.value,name:f.name.value,phone:f.phone.value,whatsapp:f.wa.value,address:f.addr.value});
+    code=j.booking_code;wl=j.whatsapp_link;ls.set('clinicq-code',code);ls.set('clinicq-wl',wl||'');await refresh();
+  }catch(z){x.textContent=z.message}
+}
+async function cancelTok(){try{await call('patient-api',{action:'cancel',code})}catch(e){}await refresh()}
+async function again(){ls.set('clinicq-code','');code=null;st=null;await loadSessions();render()}
+
+function render(){
+  if(NEED)return setup();
+  let h;
+  if(code&&st){
+    const t=st.out_session_date===iso(0),lab={waiting:'Waiting',serving:'Your turn now',done:'Completed',cancelled:'Cancelled',skipped:'Skipped. Please speak to the desk.'}[st.out_status]||st.out_status;
+    h='<div class="ticket"><div class="mut">Your token</div><div class="big">'+st.out_token_no+'</div><p><span class="chip'+(st.out_status==='serving'?' hot':'')+'">'+lab+'</span></p>'+
+      (t?'<p>Now serving <b>'+(st.out_now_serving??'none yet')+'</b><br>Patients seen <b>'+st.out_patients_seen+'</b><br>Patients before you <b>'+st.out_patients_ahead+'</b>'+(st.out_status==='waiting'?'<br>Approx. time <b>'+fmt(Math.max(nowMin()+st.out_est_wait_minutes,mins(st.out_start_time)))+'</b>':'')+'</p>':'<p>'+dl(st.out_session_date)+', '+hm(st.out_start_time)+' to '+hm(st.out_end_time)+'<br><span class="mut">Your estimate will be sent on the day.</span></p>')+
+      (wl?'<p><a class="btn" href="'+esc(wl)+'" target="_blank" rel="noopener">Get live updates on WhatsApp</a></p>':'')+
+      (st.out_status==='waiting'?'<button class="btn bad" onclick="cancelTok()">Cancel token</button>':'')+'<button class="btn alt" onclick="again()">Book another token</button><p class="mut">Booking code '+esc(code)+'</p></div>';
+  }else{
+    const opts=sess.map(s=>'<option value="'+s.id+'"'+(s.left<=0?' disabled':'')+'>'+dl(s.session_date)+', '+hm(s.start_time)+' to '+hm(s.end_time)+', '+esc(s.doctor_name)+(s.left<=0?' (full)':' ('+s.left+' tokens left)')+'</option>').join('');
+    h=sess.length?'<div class="card"><h2>Book a token</h2><form onsubmit="book(event)" autocomplete="off"><label for="sid">Session</label><select id="sid" name="sid">'+opts+'</select>'+
+      '<label for="name">Patient name</label><input id="name" name="name" maxlength="100">'+
+      '<label for="phone">Mobile number</label><input id="phone" name="phone" inputmode="numeric" placeholder="10 digits">'+
+      '<label for="wa">WhatsApp number (if different)</label><input id="wa" name="wa" inputmode="numeric">'+
+      '<label for="addr">Address (optional)</label><input id="addr" name="addr" maxlength="300">'+
+      '<div class="err" id="err" role="alert"></div><button class="btn">Get my token</button></form></div>':
+      '<div class="card"><h2>No sessions open</h2><p class="mut">'+esc(err||'The clinic has not opened booking yet. Please check back later.')+'</p></div>';
+  }
+  $('#app').innerHTML='<div class="wrap"><div class="top"><div><b style="font-size:22px">🩺 ClinicQ</b><div class="mut">'+esc(clinic)+'</div></div></div>'+h+'</div>';
+}
+if(NEED)setup();else{loadSessions().then(refresh);setInterval(()=>{if(code)refresh()},10000)}
+</script></body></html>

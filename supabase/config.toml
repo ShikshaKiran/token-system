@@ -1,0 +1,12 @@
+project_id = "clinicq"
+
+# Patient site and Meta cannot send Supabase JWTs. These functions protect themselves
+# (captcha / signature check). `notify` keeps JWT verification on: only logged-in staff.
+[functions.book]
+verify_jwt = false
+
+[functions.patient-api]
+verify_jwt = false
+
+[functions.wa-webhook]
+verify_jwt = false
