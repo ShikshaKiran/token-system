@@ -4,3 +4,4 @@ supabase/.temp
 supabase/.branches
 node_modules
 .DS_Store
+patient-site/dist
